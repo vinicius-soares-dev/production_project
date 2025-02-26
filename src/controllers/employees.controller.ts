@@ -11,33 +11,27 @@ interface Department extends RowDataPacket {
   id: number;
   name: string;
 }
-
+interface Employee extends RowDataPacket {
+  id: number;
+  name: string;
+  username: string;
+}
+// Alterações no método createEmployee
 export const createEmployee = async (req: Request, res: Response, next: NextFunction) => {
   const { 
       name, 
       username, 
-      password, 
-      work_schedule, 
-      departments 
+      password // Removido departments
   }: {
       name: string;
       username: string;
       password: string;
-      work_schedule: Record<string, string[]>;
-      departments?: number[];
   } = req.body;
 
-  // Validação dos campos obrigatórios
-  if (!name || !username || !password || !work_schedule) {
+  // Validação ajustada
+  if (!name || !username || !password) {
       return res.status(400).json({
           message: 'Dados obrigatórios faltando'
-      });
-  }
-
-  // Validação da senha
-  if (password.length < 8) {
-      return res.status(400).json({
-          message: 'Senha deve ter no mínimo 8 caracteres'
       });
   }
 
@@ -47,73 +41,37 @@ export const createEmployee = async (req: Request, res: Response, next: NextFunc
       
       try {
           await connection.beginTransaction();
-          const workScheduleJSON = JSON.stringify(work_schedule);
 
-          // 1. Verificação de departamentos
-          if (departments?.length) {
-              const [existingDepartments] = await connection.query<RowDataPacket[]>(
-                  'SELECT id FROM departments WHERE id IN (?)',
-                  [departments]
-              );
+          // Removida verificação de departamentos
 
-              const existingIds = existingDepartments.map(d => d.id);
-              const invalidIds = departments.filter(d => !existingIds.includes(d));
-
-              if (invalidIds.length > 0) {
-                  await connection.rollback();
-                  return res.status(400).json({
-                      message: `Departamentos inválidos: ${invalidIds.join(', ')}`
-                  });
-              }
-          }
-
-          // 2. Inserir colaborador
+          // Query ajustada
           const [result] = await connection.query<ResultSetHeader>(
-              'INSERT INTO employees (name, username, password, work_schedule) VALUES (?, ?, ?, ?)',
-              [name, username, hashedPassword, workScheduleJSON]
+              'INSERT INTO employees (name, username, password) VALUES (?, ?, ?)', // Corrigido número de placeholders
+              [name, username, hashedPassword]
           );
 
           const employeeId = result.insertId;
 
-          // 3. Associar departamentos
-          if (departments?.length) {
-              await connection.query(
-                  'INSERT INTO employee_departments (employee_id, department_id) VALUES ?',
-                  [departments.map(d => [employeeId, d])]
-              );
-          }
-
-          // 4. Buscar departamentos associados
-          const [departmentsData] = await connection.query<Department[]>(
-              `SELECT d.id, d.name 
-               FROM departments d
-               INNER JOIN employee_departments ed ON d.id = ed.department_id
-               WHERE ed.employee_id = ?`,
-              [employeeId]
-          );
+          // Removida associação de departamentos
 
           await connection.commit();
 
-          // Resposta formatada
+          // Resposta simplificada
           res.status(201).json({
               id: employeeId,
               name,
-              username,
-              work_schedule: JSON.parse(workScheduleJSON),
-              departments: departmentsData
+              username
           });
 
       } catch (error: any) {
           await connection.rollback();
           
-          // Tratamento específico para ER_DUP_ENTRY
           if (error.code === 'ER_DUP_ENTRY') {
               return res.status(409).json({ 
                   message: 'Username já está em uso' 
               });
           }
 
-          // Log detalhado do erro
           console.error('Erro na transação:', error);
           res.status(500).json({ 
               message: 'Erro ao processar solicitação',
@@ -164,7 +122,7 @@ export const getEmployees = async (req: Request, res: Response) => {
 
 export const updateEmployee = async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { departments, work_schedule, ...updateData } = req.body;
+  const { departments, ...updateData } = req.body;
 
   try {
     const connection = await pool.getConnection();
@@ -181,18 +139,6 @@ export const updateEmployee = async (req: Request, res: Response) => {
         await connection.query(
           `UPDATE employees SET ${sets} WHERE id = ?`,
           [...Object.values(updateData), id]
-        );
-      }
-
-      // 2. Validar e atualizar horários
-      if (work_schedule) {
-        if (typeof work_schedule !== 'object') {
-          throw new Error('Formato de horário inválido');
-        }
-        
-        await connection.query(
-          'UPDATE employees SET work_schedule = ? WHERE id = ?',
-          [JSON.stringify(work_schedule), id]
         );
       }
 
@@ -257,7 +203,6 @@ export const getAllEmployees = async (req: Request, res: Response) => {
         e.id,
         e.name,
         e.username,
-        e.work_schedule,
         COALESCE(GROUP_CONCAT(d.name), '') as departments
       FROM employees e
       LEFT JOIN employee_departments ed ON e.id = ed.employee_id
@@ -271,9 +216,6 @@ export const getAllEmployees = async (req: Request, res: Response) => {
       id: emp.id,
       name: emp.name,
       departments: emp.departments.split(',').filter(Boolean),
-      work_schedule: typeof emp.work_schedule === 'string' 
-        ? JSON.parse(emp.work_schedule) 
-        : emp.work_schedule
     }));
 
     res.json(formattedEmployees);
@@ -296,7 +238,6 @@ export const getEmployeeByUsername = async (req: Request, res: Response) => {
         e.id,
         e.name,
         e.username,
-        e.work_schedule,
         COALESCE(GROUP_CONCAT(d.name), '') as departments
       FROM employees e
       LEFT JOIN employee_departments ed ON e.id = ed.employee_id
@@ -315,12 +256,45 @@ export const getEmployeeByUsername = async (req: Request, res: Response) => {
       id: employees[0].id,
       name: employees[0].name,
       departments: employees[0].departments.split(',').filter(Boolean),
-      work_schedule: typeof employees[0].work_schedule === 'string' 
-        ? JSON.parse(employees[0].work_schedule) 
-        : employees[0].work_schedule
     };
 
     res.json(formattedEmployee);
+  } catch (error: any) {
+    console.error('Erro ao buscar colaborador:', error);
+    res.status(500).json({ 
+      message: 'Erro ao buscar colaborador',
+      error: error.message 
+    });
+  }
+};
+
+export const getEmployeeById = async (req: Request, res: Response, next: NextFunction) => {
+  const { id } = req.params;
+
+  try {
+    const query = `
+      SELECT 
+        id,
+        name,
+        username
+      FROM employees
+      WHERE id = ?
+    `;
+
+    const [employees] = await pool.query<Employee[]>(query, [id]);
+
+    if (employees.length === 0) {
+      return res.status(404).json({ message: 'Colaborador não encontrado' });
+    }
+
+    const employee = employees[0];
+
+    // Retornar os dados do colaborador
+    res.json({
+      id: employee.id,
+      name: employee.name,
+      username: employee.username,
+    });
   } catch (error: any) {
     console.error('Erro ao buscar colaborador:', error);
     res.status(500).json({ 

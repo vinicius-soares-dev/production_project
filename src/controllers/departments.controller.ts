@@ -5,13 +5,11 @@ import { RowDataPacket } from "mysql2";
 interface DepartmentRow extends RowDataPacket {
   id: number;
   name: string;
-  production_order: number;
 }
 
 interface DepartmentRequest extends Request {
   body: {
     name: string;
-    production_order: number;
   };
 }
 
@@ -24,11 +22,12 @@ interface GetDepartmentRequest extends Request {
 
 
 export const createDepartment = async (req: DepartmentRequest, res: Response, next: NextFunction) => {
-  const { name, production_order } = req.body;
+  const { name } = req.body;
 
-  if (!name || production_order === undefined) {
+  // Validação corrigida
+  if (!name) {
     return res.status(400).json({
-      message: 'Nome e ordem de produção são obrigatórios'
+      message: 'Nome é obrigatório'
     });
   }
 
@@ -38,51 +37,52 @@ export const createDepartment = async (req: DepartmentRequest, res: Response, ne
     try {
       await connection.beginTransaction();
 
-      // Verifica se nome ou ordem já existem
       const [existing] = await connection.query(
-        `SELECT * FROM departments 
-        WHERE name = ?`,
+        `SELECT * FROM departments WHERE name = ?`,
         [name]
       );
 
+      // Verificação simplificada
       if ((existing as any[]).length > 0) {
-        const conflicts = [];
-        if ((existing as any[]).some(d => d.name === name)) conflicts.push('nome');
-        
-        res.status(409).json({
-          message: `Conflito em: ${conflicts.join(', ')}`
+        await connection.rollback();
+        return res.status(409).json({
+          message: 'Nome já está em uso'
         });
-        return;
       }
 
-      // Insere o departamento
+      // Query corrigida
       const [result] = await connection.query(
-        'INSERT INTO departments (name, production_order) VALUES (?, ?)',
-        [name, production_order]
+        'INSERT INTO departments (name) VALUES (?)', // Placeholder único
+        [name]
       );
 
       await connection.commit();
       res.status(201).json({ 
         id: (result as any).insertId,
-        name,
-        production_order
+        name
       });
     } catch (error) {
       await connection.rollback();
-      next(error);
       
-      if (error instanceof Error) {
-        if ('code' in error && error.code === 'ER_DUP_ENTRY') {
-          return res.status(409).json({ message: 'Departamento já existe' });
-        }
+      // Tratamento de erro duplicado simplificado
+      if (error instanceof Error && 'code' in error && error.code === 'ER_DUP_ENTRY') {
+        return res.status(409).json({ message: 'Nome já está em uso' });
       }
       
-      res.status(500).json({ message: 'Erro ao criar departamento' });
+      console.error('Erro na criação:', error);
+      res.status(500).json({ 
+        message: 'Erro ao criar departamento',
+        error: error instanceof Error ? error.message : 'Erro desconhecido'
+      });
     } finally {
       connection.release();
     }
   } catch (err) {
-    res.status(500).json({ message: 'Erro ao obter conexão do banco' });
+    console.error('Erro geral:', err);
+    res.status(500).json({ 
+      message: 'Erro ao obter conexão do banco',
+      error: err instanceof Error ? err.message : 'Erro desconhecido'
+    });
   }
 };
 
@@ -95,18 +95,11 @@ export const getDepartments = async (req: Request, res: Response) => {
       `;
       const params: (string | number)[] = [];
       
-      // Converter para números de forma segura
-      const numericLimit = Number(limit) || 10;
-      const numericPage = Number(page) || 1;
-      const offset = (numericPage - 1) * numericLimit;
-
       if (search && typeof search === 'string') {
           query += ' WHERE name LIKE ?';
           params.push(`%${search}%`);
       }
 
-      query += ' ORDER BY production_order ASC LIMIT ? OFFSET ?';
-      params.push(numericLimit, offset);
 
       // Executar query com tipagem forte
       const [departments] = await pool.query<DepartmentRow[]>(query, params);
@@ -161,7 +154,7 @@ export const getDepartmentById = async (req: GetDepartmentRequest, res: Response
 
 export const updateDepartment = async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { name, production_order } = req.body;
+  const { name  } = req.body;
 
   try {
     const connection = await pool.getConnection();
@@ -172,15 +165,14 @@ export const updateDepartment = async (req: Request, res: Response) => {
       // Verifica conflitos excluindo o próprio registro
       const [existing] = await connection.query(
         `SELECT * FROM departments 
-        WHERE (name = ? OR production_order = ?)
+        WHERE (name = ?)
         AND id != ?`,
-        [name, production_order, id]
+        [name,  id]
       );
 
       if ((existing as any[]).length > 0) {
         const conflicts = [];
         if ((existing as any[]).some(d => d.name === name)) conflicts.push('nome');
-        if ((existing as any[]).some(d => d.production_order === production_order)) conflicts.push('ordem de produção');
         
         res.status(409).json({
           message: `Conflito em: ${conflicts.join(', ')}`
@@ -190,8 +182,8 @@ export const updateDepartment = async (req: Request, res: Response) => {
 
       // Atualiza o departamento
       const [result] = await connection.query(
-        'UPDATE departments SET name = ?, production_order = ? WHERE id = ?',
-        [name, production_order, id]
+        'UPDATE departments SET name = ? WHERE id = ?',
+        [name, id]
       );
 
       if ((result as any).affectedRows === 0) {
